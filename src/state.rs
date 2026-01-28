@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub struct AppState {
+    pub error_msg: String,
     pub system_path_input: String,
     pub server_path_input: String,
     pub pairs: HashMap<String, String>,
@@ -23,5 +24,6 @@ pub enum Message {
     EditPair(String),
     DeletePair(String),
     AcceptEditing,
-    DeclineEditing
+    DeclineEditing,
+    CloseError
 }
