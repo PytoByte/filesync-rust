@@ -1,39 +1,11 @@
-use std::collections::HashMap;
+use iced::{Element, Task, widget::{button, column, row, text, rule, scrollable}, Fill};
 
-use iced::{Element, Task, widget::{button, column, row, text, rule, text_input, scrollable}, Fill};
-
-#[derive(Debug)]
-enum EditingState {
-    Edit,
-    Delete
-}
-
-#[derive(Debug, Default)]
-struct AppState {
-    system_path_input: String,
-    server_path_input: String,
-    pairs: HashMap<String, String>,
-    editing_pair: Option<(String, String, EditingState)>
-}
-
-#[derive(Debug, Clone)]
-enum Message {
-    SystemPathInputChanged(String),
-    ServerPathInputChanged(String),
-    CreatePair,
-    EditPair(String),
-    DeletePair(String),
-    AcceptEditing,
-    DeclineEditing
-}
+mod state;
+mod popup;
+use state::{AppState, EditingState, Message};
 
 fn new() -> AppState {
-    AppState { 
-        system_path_input: "".to_string(),
-        server_path_input: "".to_string(),
-        pairs: HashMap::new(),
-        editing_pair: None
-    }
+    AppState::default()
 }
 
 fn update(state: &mut AppState, message: Message) -> Task<Message> {
@@ -47,43 +19,51 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::CreatePair => {
-            state.editing_pair = Some(("".to_string(), "".to_string(), EditingState::Edit));
+            state.editing = Some(EditingState::Create);
             Task::none()
         },
         Message::EditPair(key) => {
-            let value: String = state.pairs.remove(&key).unwrap();
-            state.system_path_input = key.clone();
-            state.server_path_input = value.clone();
-            state.editing_pair = Some((key, value, EditingState::Edit));
+            if let Some(value) = state.pairs.remove(&key) {
+                state.system_path_input = key.clone();
+                state.server_path_input = value.clone();
+                state.editing = Some(EditingState::Edit{key: key, value: value});
+            }
             Task::none()
         },
         Message::DeletePair(key) => {
-            let value: String = state.pairs.remove(&key).unwrap();
-            state.editing_pair = Some((key, value, EditingState::Delete));
+            if let Some(value) = state.pairs.remove(&key) {
+                state.editing = Some(EditingState::Delete{key: key, value: value});
+            }
             Task::none()
         },
         Message::AcceptEditing => {
-            if let Some((key, value, EditingState::Edit)) = &state.editing_pair {
-                if state.system_path_input != "" && state.server_path_input != "" {
-                    state.pairs.insert(state.system_path_input.clone(), state.server_path_input.clone());
-                } else if state.system_path_input != "" || state.server_path_input != "" {
-                    state.pairs.insert(key.clone(), value.clone());
+            if let Some(editing) = &state.editing {
+                match editing {
+                    EditingState::Create | EditingState::Edit { key: _, value: _ } => {
+                        if !state.system_path_input.is_empty() && !state.server_path_input.is_empty() {
+                            state.pairs.insert(state.system_path_input.clone(), state.server_path_input.clone());
+                        }
+                    },
+                    EditingState::Delete { key: _, value: _ } => {}
                 }
-            }
+            } 
             state.system_path_input.clear();
             state.server_path_input.clear();
-            state.editing_pair = None;
+            state.editing = None;
             Task::none()
         },
         Message::DeclineEditing => {
-            if let Some((key, value, _editing_state)) = &state.editing_pair {
-                if key != "" || value != "" {
-                    state.pairs.insert(key.clone(), value.clone());
+            if let Some(editing) = &state.editing {
+                match editing {
+                    EditingState::Create => {},
+                    EditingState::Edit { key, value } | EditingState::Delete { key, value } => {
+                        state.pairs.insert(key.clone(), value.clone());
+                    },
                 }
             }
             state.system_path_input.clear();
             state.server_path_input.clear();
-            state.editing_pair = None;
+            state.editing = None;
             Task::none()
         }
     }
@@ -92,49 +72,25 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
 fn view(state: &'_ AppState) -> Element<'_, Message> {
     let mut content = column!().spacing(8).padding(8);
 
-    if let Some((key, value, editing_state)) = &state.editing_pair {
-        match editing_state {
-            EditingState::Delete => {
-                content = content.push(
-                    column![
-                        text("Are you sure to delete pair?"),
-                        row![
-                            text(key),
-                            text("<=>"),
-                            text(value)
-                        ].spacing(8),
-                        row![
-                            button(text("Yes")).on_press(Message::AcceptEditing),
-                            button(text("No")).on_press(Message::DeclineEditing)
-                        ].spacing(8),
-                        rule::horizontal(3)
-                    ].spacing(8)
-                );
+    if let Some(editing) = &state.editing {
+        match editing {
+            EditingState::Create => {
+                content = content.push(popup::create(state))
             },
-            EditingState::Edit => {
-                content = content.push(
-                    column![
-                        text("Editing"),
-                        row![
-                            text_input("System path", &state.system_path_input)
-                                .on_input(Message::SystemPathInputChanged),
-                            text("<=>"),
-                            text_input("Server path", &state.server_path_input)
-                                .on_input(Message::ServerPathInputChanged)
-                        ].spacing(8),
-                        row![
-                            button(text("Save")).on_press(Message::AcceptEditing),
-                            button(text("Cancel")).on_press(Message::DeclineEditing)
-                        ].spacing(8),
-                        rule::horizontal(3)
-                    ].spacing(8)
-                );
+            EditingState::Edit {key: _, value: _} => {
+                content = content.push(popup::edit(state));
+            },
+            EditingState::Delete {key: _, value: _} => {
+                content = content.push(popup::delete(state));
             }
         }
+        content = content.push(rule::horizontal(3));
     }
 
     content = content.push(
-        button(text("New pair")).on_press(Message::CreatePair)
+        button(text("New pair").center().width(Fill))
+            .width(Fill)
+            .on_press(Message::CreatePair)
     );
 
     let mut pairs_content = column!().spacing(2);
@@ -142,23 +98,25 @@ fn view(state: &'_ AppState) -> Element<'_, Message> {
     for (key, value) in state.pairs.iter() {
         pairs_content = pairs_content.push(
             row![
-                text(key),
-                text("<=>"),
-                text(value).width(Fill),
+                text(format!("{key} <=> {value}")).width(Fill),
                 button(text("Edit")).on_press(Message::EditPair(key.clone())),
                 button(text("Delete")).on_press(Message::DeletePair(key.clone()))
             ].spacing(8)
         );
     }
 
-    content = content.push(scrollable(pairs_content));
+    content = content.push(scrollable(pairs_content).height(Fill));
+
+    content = content.push(
+        button(text("Synchronize").center().width(Fill))
+            .width(Fill)
+    );
 
     content.into()
 }
 
 fn main() -> iced::Result {
     iced::application(new, update, view)
-        .theme(|_s: &AppState| iced::Theme::KanagawaDragon)
         .title("filesync")
         .run()
 }
