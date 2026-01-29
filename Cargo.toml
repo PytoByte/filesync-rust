@@ -4,5 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = "0.14"
+iced = "0.14.0"
 redb = "3.1.0"
+reqwest_dav = "0.3.1"
+serde_json = "1.0.149"
+tokio = {version = "1.49.0", features = ["full"] }
+chrono = "0.4.43"
+bimap = "0.6.3"
