@@ -12,8 +12,13 @@ mod views;
 mod db;
 
 use state::{AppState, EditingState, Message};
+use typed_path::UnixPath;
 
 use crate::{db::{AUTH_TABLE, PAIRS_TABLE}, state::SyncState, views::popup};
+
+fn is_valid_unix_path(path: &str) -> bool {
+    UnixPath::new(path).is_valid()
+}
 
 fn new() -> AppState {
     let pairs_table = db::read_as_hashmap(PAIRS_TABLE).unwrap_or_default();
@@ -103,17 +108,33 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
         }
         Message::AcceptEditing => {
             if let Some(EditingState::Create | EditingState::Edit { .. }) = &state.editing {
-                if state.system_path_input.is_empty() && state.server_path_input.is_empty() {
-                    clear_editing(state);
+                if state.system_path_input.is_empty() || state.server_path_input.is_empty() {
+                    state.error_msg = String::from("Empty path");
                     return Task::none();
                 }
 
                 if !Path::new(&state.system_path_input).exists() {
                     state.error_msg = String::from("System path not found");
-                    decline_editing(state);
-                    clear_editing(state);
                     return Task::none();
                 }
+
+                if !is_valid_unix_path(&state.server_path_input) {
+                    state.error_msg = String::from("Server path is invalid");
+                    return Task::none();
+                }
+
+                if state.pairs.contains_left(&state.system_path_input) {
+                    state.error_msg = String::from("This system path already in use");
+                    return Task::none();
+                }
+
+                if state.pairs.contains_right(&state.server_path_input) {
+                    state.error_msg = String::from("This server path already in use");
+                    return Task::none();
+                }
+                
+                state.system_path_input = typed_path::NativePath::new(&state.system_path_input).absolutize().unwrap().to_string();
+                state.server_path_input = UnixPath::new(&format!("/{}", state.server_path_input)).absolutize().unwrap().to_string();
 
                 match db::write(PAIRS_TABLE, &state.system_path_input, &state.server_path_input) {
                     Ok(_) => {
@@ -154,7 +175,6 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::UpdatePairSyncState(key, syncstate) => {
-            dbg!(&syncstate);
             state.pairs_syncstate.insert(key, syncstate);
             Task::none()
         },
@@ -222,9 +242,9 @@ fn view(state: &'_ AppState) -> Element<'_, Message> {
                 text_input("Login", &state.login).width(Fill).on_input(Message::LoginInputChanged),
                 text_input("Password", &state.password).width(Fill).on_input(Message::PasswordInputChanged),
                 button(text("Save")).on_press(Message::CloseAuth),
-                rule::horizontal(3)
             ].spacing(3),
-        )
+        );
+        content = content.push(rule::horizontal(3));
     }
 
     if !state.error_msg.is_empty() {

@@ -1,9 +1,17 @@
+use std::collections::HashMap;
 use reqwest_dav::{Auth, Client, ClientBuilder, Depth, list_cmd::{ListEntity, ListFile}};
 use tokio::{fs::{self, File}, io::{AsyncWriteExt}};
 use std::{cmp::Ordering, fs::Metadata, path::Path};
 use chrono::{DateTime, Utc};
 use crate::{state::{Message, SyncState}};
 use iced::futures::{SinkExt, channel::mpsc};
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
+struct SyncMetadata {
+    files: HashMap<String, DateTime<Utc>>
+}
+
+const METADATA_FILENAME: &str = ".syncmetadata.bin";
 
 pub async fn run_sync(mut output: mpsc::Sender<Message>, host: String, login: String, password: String, pairs: Vec<(String, String)>) {
     let client = ClientBuilder::new()
@@ -17,7 +25,9 @@ pub async fn run_sync(mut output: mpsc::Sender<Message>, host: String, login: St
         return;
     }
 
-    synchronize_files(&client, &mut output, &pairs).await;
+    let mut syncmetadata = load_metadata(&client).await;
+    synchronize_files(&client, &mut output, &pairs, &syncmetadata).await;
+    save_and_upload_metadata(&client, &pairs, &mut syncmetadata).await;
     
     let _ = output.send(Message::StopSynchronize).await;
 }
@@ -34,7 +44,8 @@ pub async fn check_sync(mut output: mpsc::Sender<Message>, host: String, login: 
         return;
     }
 
-    synchronize_files_check(&client, &mut output, &pairs).await;
+    let syncmetadata = load_metadata(&client).await;
+    synchronize_files_check(&client, &mut output, &pairs, &syncmetadata).await;
     
     let _ = output.send(Message::StopSynchronizeCheck).await;
 }
@@ -148,8 +159,18 @@ async fn is_download_possible(local_path: &str) -> bool {
     Path::new(local_path).parent().unwrap().exists()
 }
 
-async fn compare_modified_time(client: &Client, local_path: &str, server_path: &str) -> Option<std::cmp::Ordering> {
+async fn compare_modified_time(client: &Client, local_path: &str, server_path: &str, syncmetadata: &Option<SyncMetadata>) -> Option<std::cmp::Ordering> {
     if let Some(metadata) = get_local_file_info(local_path).await {
+        if let Some(syncmetadata) = syncmetadata {
+            match syncmetadata.files.get(server_path) {
+                Some(datetime) => {
+                    let metadata_dt: DateTime<Utc> = metadata.modified().unwrap().into();
+                    return Some(metadata_dt.cmp(&datetime));
+                },
+                None => {}
+            }
+        }
+        
         if let Some(filelist) = get_remote_file_info(client, server_path).await {
             let metadata_dt: DateTime<Utc> = metadata.modified().unwrap().into();
             return Some(metadata_dt.cmp(&filelist.last_modified));
@@ -159,9 +180,9 @@ async fn compare_modified_time(client: &Client, local_path: &str, server_path: &
     return None;
 }
 
-async fn synchronize_file(client: &Client, output: &mut mpsc::Sender<Message>, local_path: &str, server_path: &str) -> bool {
+async fn synchronize_file(client: &Client, output: &mut mpsc::Sender<Message>, local_path: &str, server_path: &str, syncmetadata: &Option<SyncMetadata>) -> bool {
     if is_local_file_exist(local_path).await && is_remote_file_exist(client, server_path).await {
-        if let Some(ordering) = compare_modified_time(client, local_path, server_path).await {
+        if let Some(ordering) = compare_modified_time(client, local_path, server_path, &syncmetadata).await {
             match ordering {
                 Ordering::Greater => {
                     if upload_file(client, local_path, server_path).await.is_some() {
@@ -193,18 +214,18 @@ async fn synchronize_file(client: &Client, output: &mut mpsc::Sender<Message>, l
     return output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::CantSynchronize)).await.is_err();
 }
 
-async fn synchronize_files(client: &Client, output: &mut mpsc::Sender<Message>, pairs: &Vec<(String, String)>) -> bool {
-    for (k, v) in pairs.iter() {
-        if !synchronize_file(client, output, k, v).await {
+async fn synchronize_files(client: &Client, output: &mut mpsc::Sender<Message>, pairs: &Vec<(String, String)>, syncmetadata: &Option<SyncMetadata>) -> bool {
+    for (key, value) in pairs.iter() {
+        if !synchronize_file(client, output, key, value, syncmetadata).await {
             return false;
         }
     }
     return true;
 }
 
-async fn synchronize_file_check(client: &Client, output: &mut mpsc::Sender<Message>, local_path: &str, server_path: &str) -> bool {
+async fn synchronize_file_check(client: &Client, output: &mut mpsc::Sender<Message>, local_path: &str, server_path: &str, syncmetadata: &Option<SyncMetadata>) -> bool {
     if is_local_file_exist(local_path).await && is_remote_file_exist(client, server_path).await {
-        if let Some(ordering) = compare_modified_time(client, local_path, server_path).await {
+        if let Some(ordering) = compare_modified_time(client, local_path, server_path, syncmetadata).await {
             match ordering {
                 Ordering::Greater => {
                     return output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedServer)).await.is_ok();
@@ -228,11 +249,55 @@ async fn synchronize_file_check(client: &Client, output: &mut mpsc::Sender<Messa
     return output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::CantSynchronize)).await.is_err();
 }
 
-async fn synchronize_files_check(client: &Client, output: &mut mpsc::Sender<Message>, pairs: &Vec<(String, String)>) -> bool {
+async fn synchronize_files_check(client: &Client, output: &mut mpsc::Sender<Message>, pairs: &Vec<(String, String)>, syncmetadata: &Option<SyncMetadata>) -> bool {
     for (key, value) in pairs.iter() {
-        if !synchronize_file_check(client, output, key, value).await {
+        if !synchronize_file_check(client, output, key, value, syncmetadata).await {
             return false;
         }
     }
     return true;
+}
+
+async fn save_and_upload_metadata(
+    client: &Client,
+    pairs: &Vec<(String, String)>,
+    syncmetadata: &mut Option<SyncMetadata>
+) -> bool {
+    let mut metadata = syncmetadata.clone().unwrap_or_default();
+
+    for (local_path, server_path) in pairs {
+        if let Some(meta) = get_local_file_info(local_path).await {
+            if let Ok(modified) = meta.modified() {
+                let datetime: DateTime<Utc> = modified.into();
+                metadata.files.insert(server_path.clone(), datetime);
+            }
+        }
+    }
+
+    if let Ok(data) = bincode::serialize(&metadata) {
+        let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
+        if let Ok(mut file) = File::create(&temp_path).await {
+            if file.write_all(&data).await.is_ok() {
+                let result = upload_file(client, temp_path.to_str().unwrap(), METADATA_FILENAME).await.is_some();
+                let _ = fs::remove_file(&temp_path).await;
+                return result;
+            }
+        }
+    }
+
+    false
+}
+
+async fn load_metadata(client: &Client) -> Option<SyncMetadata> {
+    let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
+    
+    if download_file(client, temp_path.to_str().unwrap(), METADATA_FILENAME).await.is_some() {
+        if let Ok(data) = fs::read(&temp_path).await {
+            let _ = fs::remove_file(&temp_path).await;
+            if let Ok(meta) = bincode::deserialize::<SyncMetadata>(&data) {
+                return Some(meta);
+            }
+        }
+    }
+    None
 }

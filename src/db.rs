@@ -4,7 +4,7 @@ use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 
 pub const PAIRS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("pairs");
 pub const AUTH_TABLE: TableDefinition<&str, &str> = TableDefinition::new("auth");
-const DB_PATH: &str = "./filesync_rs_db.redb";
+const DB_PATH: &str = "./filesyncrs.redb";
 
 pub fn write(table: TableDefinition<&str, &str>, key: &str, value: &str) -> Result<(), Error> {
     let db = Database::create(DB_PATH)?;

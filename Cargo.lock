@@ -281,6 +281,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -903,12 +912,15 @@ name = "filesync-rust"
 version = "0.1.0"
 dependencies = [
  "bimap",
+ "bincode",
  "chrono",
  "iced",
  "redb",
  "reqwest_dav",
+ "serde",
  "serde_json",
  "tokio",
+ "typed-path",
 ]
 
 [[package]]
@@ -3875,6 +3887,12 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3015e6ce46d5ad8751e4a772543a30c7511468070e98e64e20165f8f81155b64"
 
 [[package]]
 name = "typenum"
