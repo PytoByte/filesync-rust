@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
 mod webdav;
-mod views;
 mod db;
 
 use std::{collections::HashMap, path::Path};
@@ -15,7 +14,6 @@ use typed_path::UnixPath;
 use bimap::BiHashMap;
 
 use crate::db::{AUTH_TABLE, PAIRS_TABLE};
-use crate::views::popup;
 
 fn main() -> iced::Result {
     iced::application(AppState::new, AppState::update, AppState::view)
@@ -301,26 +299,50 @@ impl AppState {
         self.editing = None;
     }
 
+    fn input_editing_fields(self: &'_ Self) -> Element<'_, Message> {
+        row![
+            text_input("System path", &self.local_path_input)
+                .on_input(Message::SystemPathInputChanged),
+            text("<=>"),
+            text_input("Server path", &self.remote_path_input)
+                .on_input(Message::ServerPathInputChanged)
+        ].spacing(8).into()
+    }
+
+    fn editing_buttons(self: &'_ Self) -> Element<'_, Message> {
+        row![
+            button(text("Accept")).on_press(Message::AcceptEditing),
+            button(text("Decline")).on_press(Message::DeclineEditing)
+        ].spacing(8).into()
+    }
+
     fn view(self: &'_ Self) -> Element<'_, Message> {
         let mut content = column!().spacing(8).padding(8);
 
         if let Some(editing) = &self.editing {
             match editing {
                 EditingState::Create => {
-                    content = content.push(popup::create(self));
+                    content = content.push(column![
+                        text("Creating pair"),
+                        self.input_editing_fields(),
+                        self.editing_buttons()
+                    ].spacing(3));
                 },
                 EditingState::Edit { key: _, value: _ } => {
-                    content = content.push(popup::edit(self));
+                    content = content.push(column![
+                        text("Editing pair"),
+                        self.input_editing_fields(),
+                        self.editing_buttons()
+                    ].spacing(3));
                 },
-                EditingState::Delete { key: _, value: _ } => {
-                    content = content.push(popup::delete(self));
+                EditingState::Delete { key, value } => {
+                    content = content.push(column![
+                        text("Are you sure to delete this pair?"),
+                        text(format!("{key} <=> {value}")),
+                        self.editing_buttons()
+                    ].spacing(3))
                 }
             }
-            
-            content = content.push(row![
-                button(text("Accept")).on_press(Message::AcceptEditing),
-                button(text("Decline")).on_press(Message::DeclineEditing)
-            ].spacing(8));
 
             content = content.push(rule::horizontal(3));
         }
@@ -417,7 +439,7 @@ impl AppState {
         if self.syncing {
             let pairs_vec: Vec<(String, String)> = self.pairs.iter().map(|(k, v)| {(k.clone(), v.clone())}).collect();
 
-            Subscription::run_with((self.host.to_owned(), self.login.to_owned(), self.password.to_owned(), pairs_vec), |(host, login, password, pairs_vec)| {
+            Subscription::run_with((self.host.clone(), self.login.clone(), self.password.clone(), pairs_vec), |(host, login, password, pairs_vec)| {
                 let pairs_vec = pairs_vec.clone();
                 let host = host.clone();
                 let login = login.clone();
