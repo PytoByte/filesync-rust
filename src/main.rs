@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{collections::HashMap, path::Path};
 
 use iced::{
@@ -187,6 +189,8 @@ fn update(state: &mut AppState, message: Message) -> Task<Message> {
             Task::none()
         },
         Message::OpenAuth => {
+            decline_editing(state);
+            clear_editing(state);
             state.authorization = true;
             Task::none()
         },

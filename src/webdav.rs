@@ -123,12 +123,13 @@ async fn ensure_remote_directories(client: &Client, server_path: &str) -> bool {
         if part.is_empty() {
             continue;
         }
+
         current_path.push_str(part);
         current_path.push('/');
         
         match client.mkcol_raw(&current_path).await {
             Ok(response) => {
-                if response.status() != 405 {
+                if response.status() != 405 && response.status() != 201 {
                     return false;
                 }
             },
@@ -258,10 +259,11 @@ async fn synchronize_files_check(client: &Client, output: &mut mpsc::Sender<Mess
     return true;
 }
 
+
 async fn save_and_upload_metadata(
     client: &Client,
-    pairs: &Vec<(String, String)>,
-    syncmetadata: &mut Option<SyncMetadata>
+    pairs: &[(String, String)],
+    syncmetadata: &Option<SyncMetadata>,
 ) -> bool {
     let mut metadata = syncmetadata.clone().unwrap_or_default();
 
@@ -274,7 +276,7 @@ async fn save_and_upload_metadata(
         }
     }
 
-    if let Ok(data) = bincode::serialize(&metadata) {
+    if let Ok(data) = postcard::to_allocvec(&metadata) {
         let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
         if let Ok(mut file) = File::create(&temp_path).await {
             if file.write_all(&data).await.is_ok() {
@@ -284,9 +286,9 @@ async fn save_and_upload_metadata(
             }
         }
     }
-
     false
 }
+
 
 async fn load_metadata(client: &Client) -> Option<SyncMetadata> {
     let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
@@ -294,7 +296,7 @@ async fn load_metadata(client: &Client) -> Option<SyncMetadata> {
     if download_file(client, temp_path.to_str().unwrap(), METADATA_FILENAME).await.is_some() {
         if let Ok(data) = fs::read(&temp_path).await {
             let _ = fs::remove_file(&temp_path).await;
-            if let Ok(meta) = bincode::deserialize::<SyncMetadata>(&data) {
+            if let Ok(meta) = postcard::from_bytes::<SyncMetadata>(&data) {
                 return Some(meta);
             }
         }
