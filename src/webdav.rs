@@ -1,17 +1,18 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, cmp::Ordering, fs::Metadata, path::Path};
+
 use reqwest_dav::{Auth, Client, ClientBuilder, Depth, list_cmd::{ListEntity, ListFile}};
-use tokio::{fs::{self, File}, io::{AsyncWriteExt}};
-use std::{cmp::Ordering, fs::Metadata, path::Path};
+use tokio::{fs::{self, File}, io::AsyncWriteExt};
 use chrono::{DateTime, Utc};
-use crate::{state::{Message, SyncState}};
 use iced::futures::{SinkExt, channel::mpsc};
+
+use crate::{SyncState, Message};
+
+const METADATA_FILENAME: &str = ".syncmetadata.bin";
 
 #[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
 struct SyncMetadata {
     files: HashMap<String, DateTime<Utc>>
 }
-
-const METADATA_FILENAME: &str = ".syncmetadata.bin";
 
 pub async fn run_sync(mut output: mpsc::Sender<Message>, host: String, login: String, password: String, pairs: Vec<(String, String)>) {
     let client = ClientBuilder::new()

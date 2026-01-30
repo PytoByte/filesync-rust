@@ -1,5 +1,4 @@
 use bimap::BiHashMap;
-
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 
 pub const PAIRS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("pairs");
