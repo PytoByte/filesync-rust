@@ -73,7 +73,7 @@ async fn synchronize_files(worker: &mut WebDavWorker, pairs: &Vec<(String, Strin
 }
 
 async fn synchronize_file(worker: &mut WebDavWorker, local_path: &str, server_path: &str, syncmetadata: &Option<SyncMetadata>) -> Result<()> {
-    if is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await {
+    if is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await? {
         match compare_modified_time(worker, local_path, server_path, syncmetadata).await? {
             Ordering::Greater => {
                 upload_file(worker, local_path, server_path).await?;
@@ -90,11 +90,11 @@ async fn synchronize_file(worker: &mut WebDavWorker, local_path: &str, server_pa
                 return Ok(());
             }
         }
-    } else if is_local_file_exist(local_path).await && !is_remote_file_exist(worker, server_path).await {
+    } else if is_local_file_exist(local_path).await && !is_remote_file_exist(worker, server_path).await? {
         upload_file(worker, local_path, server_path).await?;
         worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::Synchronized)).await?;
         return Ok(());
-    } else if !is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await {
+    } else if !is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await? {
         if is_download_possible(local_path).await {
             download_file(worker, local_path, server_path).await?;
             worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::Synchronized)).await?;
@@ -156,14 +156,14 @@ async fn synchronize_files_check(worker: &mut WebDavWorker, pairs: &Vec<(String,
 }
 
 async fn synchronize_file_check(worker: &mut WebDavWorker, local_path: &str, server_path: &str, syncmetadata: &Option<SyncMetadata>) -> Result<()> {
-    if is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await {
+    if is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await? {
         match compare_modified_time(worker, local_path, server_path, syncmetadata).await? {
             Ordering::Greater => {
-                worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedServer)).await?;
+                worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedRemote)).await?;
                 return Ok(());
             },
             Ordering::Less => {
-                worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedDevice)).await?;
+                worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedLocal)).await?;
                 return Ok(());
             },
             _ => {
@@ -171,12 +171,12 @@ async fn synchronize_file_check(worker: &mut WebDavWorker, local_path: &str, ser
                 return Ok(());
             }
         }
-    } else if is_local_file_exist(local_path).await && !is_remote_file_exist(worker, server_path).await {
-        worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedServer)).await?;
+    } else if is_local_file_exist(local_path).await && !is_remote_file_exist(worker, server_path).await? {
+        worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedRemote)).await?;
         return Ok(());
-    } else if !is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await {
+    } else if !is_local_file_exist(local_path).await && is_remote_file_exist(worker, server_path).await? {
         if is_download_possible(local_path).await {
-            worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedDevice)).await?;
+            worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::UnsynchronizedLocal)).await?;
             return Ok(());
         } else {
             worker.output.send(Message::UpdatePairSyncState(local_path.to_owned(), SyncState::CantSynchronize)).await?;
@@ -197,30 +197,40 @@ async fn save_and_upload_metadata(
     let mut syncmetadata = syncmetadata.unwrap_or_default();
 
     for (local_path, server_path) in pairs {
-        if let Ok(file_metadata) = get_local_file_info(local_path).await {
-            if let Ok(modified) = file_metadata.modified() {
-                let datetime: DateTime<Utc> = modified.into();
-                syncmetadata.files.insert(server_path.clone(), datetime);
-            }
-        }
+        let file_metadata = get_local_file_info(local_path).await?;
+        let modified = file_metadata.modified()?;
+        let datetime: DateTime<Utc> = modified.into();
+        syncmetadata.files.insert(server_path.clone(), datetime);
     }
 
-    if let Ok(data) = postcard::to_allocvec(&syncmetadata) {
-        let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
-        if let Ok(mut file) = File::create(&temp_path).await {
-            file.write_all(&data).await?;
-            upload_file(worker, temp_path.to_str().unwrap(), METADATA_FILENAME).await?;
-            fs::remove_file(&temp_path).await?;
-        }
-    }
+    let data = postcard::to_allocvec(&syncmetadata)?;
+    let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
+    let mut file = File::create(&temp_path).await?; 
+    file.write_all(&data).await?;
 
+    let temp_filepath = match temp_path.to_str() {
+        Some(path) => { path }
+        None => { return Err(anyhow!("Can't get temp file path")) }
+    };
+
+    if let Err(e) =  upload_file(worker, temp_filepath, METADATA_FILENAME).await {
+        fs::remove_file(&temp_path).await?;
+        return Err(e);
+    }
+    
+    fs::remove_file(&temp_path).await?;
     Ok(())
 }
 
 async fn load_metadata(worker: &WebDavWorker) -> Result<SyncMetadata> {
     let temp_path = std::env::temp_dir().join(METADATA_FILENAME);
+
+    let temp_filepath = match temp_path.to_str() {
+        Some(path) => { path }
+        None => { return Err(anyhow!("Can't get temp file path")) }
+    };
     
-    download_file(worker, temp_path.to_str().unwrap(), METADATA_FILENAME).await?;
+    download_file(worker, temp_filepath, METADATA_FILENAME).await?;
 
     let data = fs::read(&temp_path)
         .await
@@ -295,8 +305,8 @@ async fn is_local_file_exist(filepath: &str) -> bool {
     Path::new(filepath).exists()
 }
 
-async fn is_remote_file_exist(worker: &WebDavWorker, filepath: &str) -> bool {
-    worker.client.list_raw(filepath, Depth::Number(0)).await.unwrap().status() != 404
+async fn is_remote_file_exist(worker: &WebDavWorker, filepath: &str) -> Result<bool> {
+    Ok(worker.client.list_raw(filepath, Depth::Number(0)).await?.status() != 404)
 }
 
 async fn get_remote_file_info(worker: &WebDavWorker, filepath: &str) -> Result<ListFile> {

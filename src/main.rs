@@ -3,7 +3,7 @@
 mod webdav;
 mod db;
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::{HashMap, VecDeque}, path::Path};
 
 use iced::{
     Element, Fill, Subscription, Task, stream,
@@ -43,7 +43,7 @@ pub struct AppState {
     pub pairs_syncstate: HashMap<String, SyncState>,
     pub editing: Option<EditingState>,
     // Error messages
-    pub error_msg: String,
+    pub error_msgs: VecDeque<String>,
 }
 
 #[derive(Debug)]
@@ -56,8 +56,8 @@ pub enum EditingState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncState {
     Synchronized,
-    UnsynchronizedServer,
-    UnsynchronizedDevice,
+    UnsynchronizedRemote,
+    UnsynchronizedLocal,
     CantSynchronize
 }
 
@@ -67,8 +67,8 @@ pub enum Message {
     HostInputChanged(String),
     LoginInputChanged(String),
     PasswordInputChanged(String),
-    SystemPathInputChanged(String),
-    ServerPathInputChanged(String),
+    LocalPathInputChanged(String),
+    RemotePathInputChanged(String),
     // Editing
     CreatePair,
     EditPair(String),
@@ -110,7 +110,7 @@ impl AppState {
             pairs_syncstate: HashMap::new(),
             editing: None,
             // Error messages
-            error_msg: String::new(),
+            error_msgs: VecDeque::new(),
         }
     }
 
@@ -128,11 +128,11 @@ impl AppState {
                 self.password = password;
                 Task::none()
             }
-            Message::SystemPathInputChanged(input) => {
+            Message::LocalPathInputChanged(input) => {
                 self.local_path_input = input;
                 Task::none()
             }
-            Message::ServerPathInputChanged(input) => {
+            Message::RemotePathInputChanged(input) => {
                 self.remote_path_input = input;
                 Task::none()
             }
@@ -179,32 +179,44 @@ impl AppState {
                 match &self.editing {
                     Some(EditingState::Create | EditingState::Edit { .. }) => {
                         if self.local_path_input.is_empty() || self.remote_path_input.is_empty() {
-                            self.error_msg = String::from("Empty path");
+                            self.push_error_msg("Empty path");
                             return Task::none();
                         }
 
                         if !Path::new(&self.local_path_input).exists() {
-                            self.error_msg = String::from("System path not found");
+                            self.push_error_msg("System path not found");
                             return Task::none();
                         }
 
                         if !is_valid_unix_path(&self.remote_path_input) {
-                            self.error_msg = String::from("Server path is invalid");
+                            self.push_error_msg("Server path is invalid");
                             return Task::none();
                         }
 
                         if self.pairs.contains_left(&self.local_path_input) {
-                            self.error_msg = String::from("This system path already in use");
+                            self.push_error_msg("This system path already in use");
                             return Task::none();
                         }
 
                         if self.pairs.contains_right(&self.remote_path_input) {
-                            self.error_msg = String::from("This server path already in use");
+                            self.push_error_msg("This server path already in use");
                             return Task::none();
                         }
                         
-                        self.local_path_input = typed_path::NativePath::new(&self.local_path_input).absolutize().unwrap().to_string();
-                        self.remote_path_input = UnixPath::new(&format!("/{}", self.remote_path_input)).absolutize().unwrap().to_string();
+                        self.local_path_input = match typed_path::NativePath::new(&self.local_path_input).absolutize() {
+                            Ok(path) => { path.to_string() }
+                            Err(e) => {
+                                self.push_error_msg(&format!("Can't absolutize local path {}", e.to_string()));
+                                return Task::none();
+                            }
+                        };
+                        self.remote_path_input = match UnixPath::new(&format!("/{}", self.remote_path_input)).absolutize() {
+                            Ok(path) => { path.to_string() }
+                            Err(e) => {
+                                self.push_error_msg(&format!("Can't absolutize remote path {}", e.to_string()));
+                                return Task::none();
+                            }
+                        };
 
                         match db::write(PAIRS_TABLE, &self.local_path_input, &self.remote_path_input) {
                             Ok(_) => {
@@ -215,7 +227,7 @@ impl AppState {
                                 self.clear_editing();
                             }
                             Err(e) => {
-                                self.error_msg = e.to_string();
+                                self.push_error_msg(&e.to_string());
                             }
                         }
                     }
@@ -225,7 +237,7 @@ impl AppState {
                                 self.clear_editing();
                             }
                             Err(e) => {
-                                self.error_msg = e.to_string();
+                                self.push_error_msg(&e.to_string());
                             }
                         }
                     }
@@ -264,21 +276,35 @@ impl AppState {
                 Task::none()
             }
             Message::CloseAuth => {
+                if let Err(e) = db::write(AUTH_TABLE, "host", &self.host) {
+                    self.push_error_msg(&e.to_string());
+                    return Task::none();
+                }
+                if let Err(e) = db::write(AUTH_TABLE, "login", &self.login) {
+                    self.push_error_msg(&e.to_string());
+                    return Task::none();
+                }
+                if let Err(e) = db::write(AUTH_TABLE, "password", &self.password) {
+                    self.push_error_msg(&e.to_string());
+                    return Task::none();
+                }
+
                 self.authorization = false;
-                db::write(AUTH_TABLE, "host", &self.host).unwrap();
-                db::write(AUTH_TABLE, "login", &self.login).unwrap();
-                db::write(AUTH_TABLE, "password", &self.password).unwrap();
                 Task::none()
             }
             Message::ShowError(error_msg) => {
-                self.error_msg = error_msg;
+                self.push_error_msg(&error_msg);
                 Task::none()
             }
             Message::CloseError => {
-                self.error_msg.clear();
+                self.error_msgs.pop_front();
                 Task::none()
             }
         }
+    }
+
+    fn push_error_msg(self: &mut Self, msg: &str) {
+        self.error_msgs.push_back(msg.to_string());
     }
 
     fn decline_editing(self: &mut Self) {
@@ -301,11 +327,11 @@ impl AppState {
 
     fn input_editing_fields(self: &'_ Self) -> Element<'_, Message> {
         row![
-            text_input("System path", &self.local_path_input)
-                .on_input(Message::SystemPathInputChanged),
+            text_input("Local path", &self.local_path_input)
+                .on_input(Message::LocalPathInputChanged),
             text("<=>"),
-            text_input("Server path", &self.remote_path_input)
-                .on_input(Message::ServerPathInputChanged)
+            text_input("Remote path", &self.remote_path_input)
+                .on_input(Message::RemotePathInputChanged)
         ].spacing(8).into()
     }
 
@@ -360,10 +386,10 @@ impl AppState {
             content = content.push(rule::horizontal(3));
         }
 
-        if !self.error_msg.is_empty() {
+        if let Some(msg) = self.error_msgs.front() {
             content = content.push(
                 column![
-                    text(format!("Error: {}", self.error_msg)),
+                    text(format!("({}) Error: {}", self.error_msgs.len(), msg)),
                     button(text("Close")).on_press(Message::CloseError)
                 ]
                 .spacing(3),
@@ -384,10 +410,10 @@ impl AppState {
                 Some(SyncState::Synchronized) => {
                     "✅"
                 },
-                Some(SyncState::UnsynchronizedDevice) => {
+                Some(SyncState::UnsynchronizedLocal) => {
                     "☁️➡️💻"
                 },
-                Some(SyncState::UnsynchronizedServer) => {
+                Some(SyncState::UnsynchronizedRemote) => {
                     "💻➡️☁️"
                 },
                 Some(SyncState::CantSynchronize) => {
